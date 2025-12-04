@@ -758,6 +758,11 @@ void kalmanCoreExternalizeState(const kalmanCoreData_t* this, state_t *state, co
       .z = this->q[3]
   };
 
+  // The Lighthouse-relative pose is maintained by a dedicated rig-frame estimator.
+  // Zero the struct here so callers never see stale data when that estimator is disabled.
+  state->lighthouse.position = (point_t){0};
+  state->lighthouse.velocity = (velocity_t){0};
+
   assertStateNotNaN(this);
 }
 

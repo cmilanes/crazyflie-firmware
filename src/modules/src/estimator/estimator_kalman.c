@@ -100,6 +100,26 @@
 #include "debug.h"
 #include "cfassert.h"
 
+/*
+ * Developer notes (mobile Lighthouse rigs)
+ * ----------------------------------------
+ * The Kalman filter in this file now maintains two parallel pose tracks when
+ * requested:
+ *  - coreData: IMU-centered world/inertial estimate. Lighthouse measurements
+ *    are ignored here when lighthouseRelativeMode is enabled to keep this
+ *    state in a stable, non-moving frame.
+ *  - lighthouseCoreData: Lighthouse rig-relative estimate. Only Lighthouse
+ *    measurements update this state, keeping it aligned with a moving rig
+ *    without disturbing the world estimate.
+ *
+ * The stabilizer can pick which pose to feed the controllers; see the
+ * stabilizer module for the selection parameter.
+ *
+ * Compatibility: the default parameter values keep the legacy behavior where
+ * Lighthouse data is fused directly into the world EKF, so existing
+ * lighthouse-localization scripts continue to work when lhRelativeMode=0.
+ */
+
 
 // #define KALMAN_USE_BARO_UPDATE
 
@@ -128,6 +148,10 @@ const uint32_t PREDICTION_UPDATE_INTERVAL_MS = 1000 / PREDICT_RATE;
 static bool robustTwr = false;
 static bool robustTdoa = false;
 
+// When set, Lighthouse measurements are steered to a dedicated Lighthouse-frame
+// estimator instead of being fused into the inertial/world EKF state.
+static bool lighthouseRelativeMode = false;
+
 /**
  * Quadrocopter State
  *
@@ -140,6 +164,7 @@ static bool robustTdoa = false;
  */
 
 NO_DMA_CCM_SAFE_ZERO_INIT static kalmanCoreData_t coreData;
+NO_DMA_CCM_SAFE_ZERO_INIT static kalmanCoreData_t lighthouseCoreData;
 
 /**
  * Internal variables. Note that static declaration results in default initialization (to 0)
@@ -154,6 +179,7 @@ static Axis3f gyroLatest;
 
 static OutlierFilterTdoaState_t outlierFilterTdoaState;
 static OutlierFilterLhState_t sweepOutlierFilterState;
+static OutlierFilterLhState_t lighthouseSweepOutlierFilterState;
 
 
 // Indicates that the internal state is corrupt and should be reset
@@ -162,9 +188,13 @@ bool resetEstimation = false;
 static kalmanCoreParams_t coreParams = {
   KALMAN_CORE_DEFAULT_PARAMS_INIT
 };
+static kalmanCoreParams_t lighthouseCoreParams = {
+  KALMAN_CORE_DEFAULT_PARAMS_INIT
+};
 
 // Data used to enable the task and stabilizer loop to run with minimal locking
 static state_t taskEstimatorState; // The estimator state produced by the task, copied to the stabilizer when needed.
+static state_t lighthouseEstimatorState; // Rig-frame output used to populate taskEstimatorState.lighthouse.
 
 // Statistics
 #define ONE_SECOND 1000
@@ -186,7 +216,7 @@ static const bool useBaroUpdate = false;
 #endif
 
 static void kalmanTask(void* parameters);
-static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlying);
+static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlying, const bool useLighthouseRelativeMode);
 
 STATIC_MEM_TASK_ALLOC_STACK_NO_DMA_CCM_SAFE(kalmanTask, KALMAN_TASK_STACKSIZE);
 
@@ -235,6 +265,7 @@ static void kalmanTask(void* parameters) {
     #else
     bool quadIsFlying = supervisorIsFlying();
     #endif
+    const bool useLighthouseRigEstimator = lighthouseRelativeMode;
 
   #ifdef KALMAN_DECOUPLE_XY
     kalmanCoreDecoupleXY(&coreData);
@@ -246,6 +277,9 @@ static void kalmanTask(void* parameters) {
       axis3fSubSamplerFinalize(&gyroSubSampler);
 
       kalmanCorePredict(&coreData, &coreParams, &accSubSampler.subSample, &gyroSubSampler.subSample, nowMs, quadIsFlying);
+      if (useLighthouseRigEstimator) {
+        kalmanCorePredict(&lighthouseCoreData, &lighthouseCoreParams, &accSubSampler.subSample, &gyroSubSampler.subSample, nowMs, quadIsFlying);
+      }
       nextPredictionMs = nowMs + PREDICTION_UPDATE_INTERVAL_MS;
 
       STATS_CNT_RATE_EVENT(&predictionCounter);
@@ -257,12 +291,18 @@ static void kalmanTask(void* parameters) {
 
     // Add process noise every loop, rather than every prediction
     kalmanCoreAddProcessNoise(&coreData, &coreParams, nowMs);
+    if (useLighthouseRigEstimator) {
+      kalmanCoreAddProcessNoise(&lighthouseCoreData, &lighthouseCoreParams, nowMs);
+    }
 
-    updateQueuedMeasurements(nowMs, quadIsFlying);
+    updateQueuedMeasurements(nowMs, quadIsFlying, useLighthouseRigEstimator);
 
     if (kalmanCoreFinalize(&coreData))
     {
       STATS_CNT_RATE_EVENT(&finalizeCounter);
+    }
+    if (useLighthouseRigEstimator) {
+      kalmanCoreFinalize(&lighthouseCoreData);
     }
 
     if (! kalmanSupervisorIsStateWithinBounds(&coreData)) {
@@ -280,6 +320,11 @@ static void kalmanTask(void* parameters) {
      */
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     kalmanCoreExternalizeState(&coreData, &taskEstimatorState, &accLatest);
+    if (useLighthouseRigEstimator) {
+      kalmanCoreExternalizeState(&lighthouseCoreData, &lighthouseEstimatorState, &accLatest);
+      taskEstimatorState.lighthouse.position = lighthouseEstimatorState.position;
+      taskEstimatorState.lighthouse.velocity = lighthouseEstimatorState.velocity;
+    }
     xSemaphoreGive(dataMutex);
 
     STATS_CNT_RATE_EVENT(&updateCounter);
@@ -298,7 +343,7 @@ void estimatorKalman(state_t *state, const stabilizerStep_t stabilizerStep) {
   xSemaphoreGive(runTaskSemaphore);
 }
 
-static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlying) {
+static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlying, const bool useLighthouseRelativeMode) {
   /**
    * Sensor measurements can come in sporadically and faster than the stabilizer loop frequency,
    * we therefore consume all measurements since the last loop, rather than accumulating
@@ -318,7 +363,11 @@ static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlyi
         }
         break;
       case MeasurementTypePosition:
-        kalmanCoreUpdateWithPosition(&coreData, &m.data.position);
+        if (useLighthouseRelativeMode && m.data.position.source == MeasurementSourceLighthouse) {
+          kalmanCoreUpdateWithPosition(&lighthouseCoreData, &m.data.position);
+        } else {
+          kalmanCoreUpdateWithPosition(&coreData, &m.data.position);
+        }
         break;
       case MeasurementTypePose:
         kalmanCoreUpdateWithPose(&coreData, &m.data.pose);
@@ -334,18 +383,30 @@ static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlyi
         break;
       case MeasurementTypeTOF:
         kalmanCoreUpdateWithTof(&coreData, &m.data.tof);
+        if (useLighthouseRelativeMode) {
+          kalmanCoreUpdateWithTof(&lighthouseCoreData, &m.data.tof);
+        }
         break;
       case MeasurementTypeAbsoluteHeight:
         kalmanCoreUpdateWithAbsoluteHeight(&coreData, &m.data.height);
+        if (useLighthouseRelativeMode) {
+          kalmanCoreUpdateWithAbsoluteHeight(&lighthouseCoreData, &m.data.height);
+        }
         break;
       case MeasurementTypeFlow:
         kalmanCoreUpdateWithFlow(&coreData, &m.data.flow, &gyroLatest);
         break;
       case MeasurementTypeYawError:
-        kalmanCoreUpdateWithYawError(&coreData, &m.data.yawError);
+        if (!useLighthouseRelativeMode) {
+          kalmanCoreUpdateWithYawError(&coreData, &m.data.yawError);
+        }
         break;
       case MeasurementTypeSweepAngle:
-        kalmanCoreUpdateWithSweepAngles(&coreData, &m.data.sweepAngle, nowMs, &sweepOutlierFilterState);
+        if (useLighthouseRelativeMode) {
+          kalmanCoreUpdateWithSweepAngles(&lighthouseCoreData, &m.data.sweepAngle, nowMs, &lighthouseSweepOutlierFilterState);
+        } else {
+          kalmanCoreUpdateWithSweepAngles(&coreData, &m.data.sweepAngle, nowMs, &sweepOutlierFilterState);
+        }
         break;
       case MeasurementTypeGyroscope:
         axis3fSubSamplerAccumulate(&gyroSubSampler, &m.data.gyroscope.gyro);
@@ -358,6 +419,9 @@ static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlyi
       case MeasurementTypeBarometer:
         if (useBaroUpdate) {
           kalmanCoreUpdateWithBaro(&coreData, &coreParams, m.data.barometer.baro.asl, quadIsFlying);
+          if (useLighthouseRelativeMode) {
+            kalmanCoreUpdateWithBaro(&lighthouseCoreData, &lighthouseCoreParams, m.data.barometer.baro.asl, quadIsFlying);
+          }
         }
         break;
       default:
@@ -379,14 +443,18 @@ void estimatorKalmanInit(void)
   }
   #endif
 
+  lighthouseCoreParams = coreParams;
+
   axis3fSubSamplerInit(&accSubSampler, GRAVITY_MAGNITUDE);
   axis3fSubSamplerInit(&gyroSubSampler, DEG_TO_RAD);
 
   outlierFilterTdoaReset(&outlierFilterTdoaState);
   outlierFilterLighthouseReset(&sweepOutlierFilterState, 0);
+  outlierFilterLighthouseReset(&lighthouseSweepOutlierFilterState, 0);
 
   uint32_t nowMs = T2M(xTaskGetTickCount());
   kalmanCoreInit(&coreData, &coreParams, nowMs);
+  kalmanCoreInit(&lighthouseCoreData, &lighthouseCoreParams, nowMs);
 }
 
 bool estimatorKalmanTest(void)
@@ -535,6 +603,10 @@ PARAM_GROUP_START(kalman)
  * @brief Reset the kalman estimator
  */
   PARAM_ADD_CORE(PARAM_UINT8, resetEstimation, &resetEstimation)
+/**
+ * @brief Route Lighthouse data to a rig-relative estimator instead of world EKF (0 = world fusion, 1 = rig frame)
+ */
+  PARAM_ADD_CORE(PARAM_UINT8, lhRelativeMode, &lighthouseRelativeMode)
 /**
  * @brief Nonzero to use robust TDOA method (default: 0)
  */

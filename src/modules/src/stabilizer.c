@@ -57,6 +57,19 @@
 #include "static_mem.h"
 #include "rateSupervisor.h"
 
+/*
+ * Developer notes (mobile Lighthouse rigs)
+ * ----------------------------------------
+ * The estimator now exposes two pose frames:
+ *   - state.position / state.velocity: IMU/world-centric estimate.
+ *   - state.lighthouse.*: pose relative to the Lighthouse rig frame.
+ * The parameter stabilizer.lhCtrlFrame selects which pose the controller
+ * consumes so a moving Lighthouse rig can be tracked without corrupting the
+ * world estimate.
+ * Default parameters leave the controller on the world frame so legacy
+ * Lighthouse localization/control scripts behave exactly as before.
+ */
+
 static bool isInit;
 
 static uint32_t inToOutLatency;
@@ -76,6 +89,7 @@ static setpoint_t tempSetpoint;
 
 static StateEstimatorType estimatorType;
 static ControllerType controllerType;
+static bool useLighthouseFrameForControl = false;
 
 static STATS_CNT_RATE_DEFINE(stabilizerRate, 500);
 static rateSupervisor_t rateSupervisorContext;
@@ -325,28 +339,34 @@ static void stabilizerTask(void* param)
 
       stateEstimator(&state, stabilizerStep);
 
+      state_t controlState = state;
+      if (useLighthouseFrameForControl) {
+        controlState.position = state.lighthouse.position;
+        controlState.velocity = state.lighthouse.velocity;
+      }
+
       const bool areMotorsAllowedToRun = supervisorAreMotorsAllowedToRun();
 
       // Critical for safety, be careful if you modify this code!
       crtpCommanderBlock(! areMotorsAllowedToRun);
 
-      if (crtpCommanderHighLevelGetSetpoint(&tempSetpoint, &state, stabilizerStep)) {
+      if (crtpCommanderHighLevelGetSetpoint(&tempSetpoint, &controlState, stabilizerStep)) {
         commanderSetSetpoint(&tempSetpoint, COMMANDER_PRIORITY_HIGHLEVEL);
       }
-      commanderGetSetpoint(&setpoint, &state);
+      commanderGetSetpoint(&setpoint, &controlState);
 
       // Critical for safety, be careful if you modify this code!
       // Let the supervisor update it's view of the current situation
       supervisorUpdate(&sensorData, &setpoint, stabilizerStep);
 
       // Let the collision avoidance module modify the setpoint, if needed
-      collisionAvoidanceUpdateSetpoint(&setpoint, &sensorData, &state, stabilizerStep);
+      collisionAvoidanceUpdateSetpoint(&setpoint, &sensorData, &controlState, stabilizerStep);
 
       // Critical for safety, be careful if you modify this code!
       // Let the supervisor modify the setpoint to handle exceptional conditions
       supervisorOverrideSetpoint(&setpoint);
 
-      controller(&control, &setpoint, &sensorData, &state, stabilizerStep);
+      controller(&control, &setpoint, &sensorData, &controlState, stabilizerStep);
 
       // Critical for safety, be careful if you modify this code!
       // The supervisor will already set thrust to 0 in the setpoint if needed, but to be extra sure prevent motors from running.
@@ -391,11 +411,15 @@ PARAM_GROUP_START(stabilizer)
  *
  * ** Experimental, needs to be enabled in kbuild
  */
-PARAM_ADD_CORE(PARAM_UINT8, estimator, &estimatorType)
+  PARAM_ADD_CORE(PARAM_UINT8, estimator, &estimatorType)
 /**
  * @brief Controller type Auto select(0), PID(1), Mellinger(2), INDI(3), Brescianini(4), Lee(5) (Default: 0)
  */
-PARAM_ADD_CORE(PARAM_UINT8, controller, &controllerType)
+  PARAM_ADD_CORE(PARAM_UINT8, controller, &controllerType)
+/**
+ * @brief When 1, controller consumes Lighthouse rig-frame position instead of world estimate
+ */
+  PARAM_ADD_CORE(PARAM_UINT8, lhCtrlFrame, &useLighthouseFrameForControl)
 
 PARAM_GROUP_STOP(stabilizer)
 
@@ -699,6 +723,19 @@ LOG_ADD_CORE(LOG_FLOAT, y, &state.position.y)
  * @brief The estimated position of the platform in the global reference frame, Z [m]
  */
 LOG_ADD_CORE(LOG_FLOAT, z, &state.position.z)
+
+/**
+ * @brief Lighthouse rig-frame position X [m]
+ */
+LOG_ADD_CORE(LOG_FLOAT, lhx, &state.lighthouse.position.x)
+/**
+ * @brief Lighthouse rig-frame position Y [m]
+ */
+LOG_ADD_CORE(LOG_FLOAT, lhy, &state.lighthouse.position.y)
+/**
+ * @brief Lighthouse rig-frame position Z [m]
+ */
+LOG_ADD_CORE(LOG_FLOAT, lhz, &state.lighthouse.position.z)
 
 /**
  * @brief The velocity of the Crazyflie in the global reference frame, X [m/s]
