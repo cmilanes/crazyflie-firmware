@@ -174,12 +174,19 @@ typedef struct sensorData_s {
   uint64_t interruptTimestamp;
 } sensorData_t;
 
+typedef struct lighthouseEstimate_s {
+  // Pose of the Crazyflie relative to the Lighthouse rig frame (mobile base stations)
+  point_t position;         // m, rig/Lighthouse frame
+  velocity_t velocity;      // m/s, rig/Lighthouse frame
+} lighthouseEstimate_t;
+
 typedef struct state_s {
   attitude_t attitude;      // deg (legacy CF2 body coordinate system, where pitch is inverted)
   quaternion_t attitudeQuaternion;
   point_t position;         // m
   velocity_t velocity;      // m/s
   acc_t acc;                // Gs (but acc.z without considering gravity)
+  lighthouseEstimate_t lighthouse; // Separate pose expressed in Lighthouse rig frame
 } state_t;
 
 #define STABILIZER_NR_OF_MOTORS 4
