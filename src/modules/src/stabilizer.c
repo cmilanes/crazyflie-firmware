@@ -51,6 +51,7 @@
 #include "supervisor.h"
 
 #include "estimator.h"
+#include "estimator_kalman.h"
 #include "usddeck.h"
 #include "quatcompress.h"
 #include "statsCnt.h"
@@ -339,8 +340,10 @@ static void stabilizerTask(void* param)
 
       stateEstimator(&state, stabilizerStep);
 
+      const bool useLhFrame = useLighthouseFrameForControl && kalmanLhRelativeModeIsEnabled();
+
       state_t controlState = state;
-      if (useLighthouseFrameForControl) {
+      if (useLhFrame) {
         controlState.position = state.lighthouse.position;
         controlState.velocity = state.lighthouse.velocity;
       }
@@ -422,6 +425,16 @@ PARAM_GROUP_START(stabilizer)
   PARAM_ADD_CORE(PARAM_UINT8, lhCtrlFrame, &useLighthouseFrameForControl)
 
 PARAM_GROUP_STOP(stabilizer)
+
+LOG_GROUP_START(lhdebug)
+LOG_ADD_CORE(LOG_UINT8, ctrlFrame, &useLighthouseFrameForControl)
+LOG_GROUP_STOP(lhdebug)
+
+LOG_GROUP_START(stateLh)
+LOG_ADD_CORE(LOG_FLOAT, x, &state.lighthouse.position.x)
+LOG_ADD_CORE(LOG_FLOAT, y, &state.lighthouse.position.y)
+LOG_ADD_CORE(LOG_FLOAT, z, &state.lighthouse.position.z)
+LOG_GROUP_STOP(stateLh)
 
 
 /**
