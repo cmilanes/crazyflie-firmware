@@ -111,8 +111,7 @@
  * The Kalman filter in this file now maintains two parallel pose tracks when
  * requested:
  *  - coreData: IMU-centered world/inertial estimate. Lighthouse measurements
- *    are ignored here when lighthouseRelativeMode is enabled to keep this
- *    state in a stable, non-moving frame.
+ *    continue to update this state to preserve the stock world-frame behavior.
  *  - lighthouseCoreData: Lighthouse rig-relative estimate. Only Lighthouse
  *    measurements update this state, keeping it aligned with a moving rig
  *    without disturbing the world estimate.
@@ -156,7 +155,7 @@ static bool robustTdoa = false;
 // When set, Lighthouse measurements are steered to a dedicated Lighthouse-frame
 // estimator instead of being fused into the inertial/world EKF state.
 #if LH_RELATIVE_EXPERIMENTS
-static bool lighthouseRelativeMode = false;
+static uint8_t lighthouseRelativeMode = 0;
 #endif
 
 /**
@@ -275,16 +274,17 @@ static void kalmanTask(void* parameters) {
       resetEstimation = false;
     }
 
-    #ifdef CONFIG_ESTIMATOR_KALMAN_GENERAL_PURPOSE
+#ifdef CONFIG_ESTIMATOR_KALMAN_GENERAL_PURPOSE
     bool quadIsFlying = false;
-    #else
+#else
     bool quadIsFlying = supervisorIsFlying();
-    #endif
+#endif
 #if LH_RELATIVE_EXPERIMENTS
-    const bool useLighthouseRigEstimator = lighthouseRelativeMode;
+    const bool useLighthouseRigEstimator = (lighthouseRelativeMode != 0);
 #else
     const bool useLighthouseRigEstimator = false;
 #endif
+    
 
   #ifdef KALMAN_DECOUPLE_XY
     kalmanCoreDecoupleXY(&coreData);
@@ -402,15 +402,20 @@ static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlyi
         }
         break;
       case MeasurementTypePosition:
+      {
+        const measurementPosition_t* p = &m.data.position;
+
+        // Always update the world EKF to keep stock behavior intact
+        kalmanCoreUpdateWithPosition(&coreData, p);
+
 #if LH_RELATIVE_EXPERIMENTS
-        if (useLighthouseRelativeMode && m.data.position.source == MeasurementSourceLighthouse) {
-          kalmanCoreUpdateWithPosition(&lighthouseCoreData, &m.data.position);
-        } else
-#endif
-        {
-          kalmanCoreUpdateWithPosition(&coreData, &m.data.position);
+        // Additionally update the rig EKF when running in Lighthouse-relative mode
+        if (useLighthouseRelativeMode && p->source == MeasurementSourceLighthouse) {
+          kalmanCoreUpdateWithPosition(&lighthouseCoreData, p);
         }
+#endif
         break;
+      }
       case MeasurementTypePose:
         kalmanCoreUpdateWithPose(&coreData, &m.data.pose);
         break;
@@ -451,14 +456,20 @@ static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlyi
         }
         break;
       case MeasurementTypeSweepAngle:
-        if (useLighthouseRelativeMode) {
+      {
+        const measurementSweepAngle_t* sa = &m.data.sweepAngle;
+
+        // Always update the world EKF with Lighthouse sweep angles
+        kalmanCoreUpdateWithSweepAngles(&coreData, sa, nowMs, &sweepOutlierFilterState);
+
 #if LH_RELATIVE_EXPERIMENTS
-          kalmanCoreUpdateWithSweepAngles(&lighthouseCoreData, &m.data.sweepAngle, nowMs, &lighthouseSweepOutlierFilterState);
-          break;
-#endif
+        // Mirror sweep updates into the rig EKF when enabled
+        if (useLighthouseRelativeMode) {
+          kalmanCoreUpdateWithSweepAngles(&lighthouseCoreData, sa, nowMs, &lighthouseSweepOutlierFilterState);
         }
-        kalmanCoreUpdateWithSweepAngles(&coreData, &m.data.sweepAngle, nowMs, &sweepOutlierFilterState);
+#endif
         break;
+      }
       case MeasurementTypeGyroscope:
         axis3fSubSamplerAccumulate(&gyroSubSampler, &m.data.gyroscope.gyro);
         gyroLatest = m.data.gyroscope.gyro;
@@ -503,6 +514,7 @@ void estimatorKalmanInit(void)
   outlierFilterLighthouseReset(&sweepOutlierFilterState, 0);
 #if LH_RELATIVE_EXPERIMENTS
   lighthouseCoreParams = coreParams;
+  lighthouseCoreParams.lighthousePositionOnly = true;
   outlierFilterLighthouseReset(&lighthouseSweepOutlierFilterState, 0);
 #endif
 
@@ -530,7 +542,7 @@ void estimatorKalmanGetEstimatedRot(float * rotationMatrix) {
 
 bool kalmanLhRelativeModeIsEnabled(void) {
 #if LH_RELATIVE_EXPERIMENTS
-  return lighthouseRelativeMode;
+  return lighthouseRelativeMode != 0;
 #else
   return false;
 #endif

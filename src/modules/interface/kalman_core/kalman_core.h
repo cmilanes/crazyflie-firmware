@@ -133,6 +133,10 @@ typedef struct {
   float initialYaw;
 
   float attitudeReversion;
+
+  // When true, x/y position and velocity predictions skip accelerometer-based
+  // propagation so Lighthouse updates dominate horizontal motion.
+  bool lighthousePositionOnly;
 } kalmanCoreParams_t;
 
 /**

@@ -342,6 +342,7 @@ static void predictDt(kalmanCoreData_t* this, const kalmanCoreParams_t *params, 
   static __attribute__((aligned(4))) arm_matrix_instance_f32 tmpNN2m = { KC_STATE_DIM, KC_STATE_DIM, tmpNN2d};
 
   float dt2 = dt*dt;
+  const bool skipHorizontalAccPrediction = params->lighthousePositionOnly;
 
   // ====== DYNAMICS LINEARIZATION ======
   // Initialize as the identity
@@ -358,55 +359,75 @@ static void predictDt(kalmanCoreData_t* this, const kalmanCoreParams_t *params, 
   A[KC_STATE_D2][KC_STATE_D2] = 1;
 
   // position from body-frame velocity
-  A[KC_STATE_X][KC_STATE_PX] = this->R[0][0]*dt;
-  A[KC_STATE_Y][KC_STATE_PX] = this->R[1][0]*dt;
-  A[KC_STATE_Z][KC_STATE_PX] = this->R[2][0]*dt;
+  if (!skipHorizontalAccPrediction) {
+    A[KC_STATE_X][KC_STATE_PX] = this->R[0][0]*dt;
+    A[KC_STATE_Y][KC_STATE_PX] = this->R[1][0]*dt;
+    A[KC_STATE_Z][KC_STATE_PX] = this->R[2][0]*dt;
 
-  A[KC_STATE_X][KC_STATE_PY] = this->R[0][1]*dt;
-  A[KC_STATE_Y][KC_STATE_PY] = this->R[1][1]*dt;
-  A[KC_STATE_Z][KC_STATE_PY] = this->R[2][1]*dt;
+    A[KC_STATE_X][KC_STATE_PY] = this->R[0][1]*dt;
+    A[KC_STATE_Y][KC_STATE_PY] = this->R[1][1]*dt;
+    A[KC_STATE_Z][KC_STATE_PY] = this->R[2][1]*dt;
+  }
 
   A[KC_STATE_X][KC_STATE_PZ] = this->R[0][2]*dt;
   A[KC_STATE_Y][KC_STATE_PZ] = this->R[1][2]*dt;
   A[KC_STATE_Z][KC_STATE_PZ] = this->R[2][2]*dt;
 
   // position from attitude error
-  A[KC_STATE_X][KC_STATE_D0] = (this->S[KC_STATE_PY]*this->R[0][2] - this->S[KC_STATE_PZ]*this->R[0][1])*dt;
-  A[KC_STATE_Y][KC_STATE_D0] = (this->S[KC_STATE_PY]*this->R[1][2] - this->S[KC_STATE_PZ]*this->R[1][1])*dt;
+  if (!skipHorizontalAccPrediction) {
+    A[KC_STATE_X][KC_STATE_D0] = (this->S[KC_STATE_PY]*this->R[0][2] - this->S[KC_STATE_PZ]*this->R[0][1])*dt;
+    A[KC_STATE_Y][KC_STATE_D0] = (this->S[KC_STATE_PY]*this->R[1][2] - this->S[KC_STATE_PZ]*this->R[1][1])*dt;
+  }
   A[KC_STATE_Z][KC_STATE_D0] = (this->S[KC_STATE_PY]*this->R[2][2] - this->S[KC_STATE_PZ]*this->R[2][1])*dt;
 
-  A[KC_STATE_X][KC_STATE_D1] = (- this->S[KC_STATE_PX]*this->R[0][2] + this->S[KC_STATE_PZ]*this->R[0][0])*dt;
-  A[KC_STATE_Y][KC_STATE_D1] = (- this->S[KC_STATE_PX]*this->R[1][2] + this->S[KC_STATE_PZ]*this->R[1][0])*dt;
+  if (!skipHorizontalAccPrediction) {
+    A[KC_STATE_X][KC_STATE_D1] = (- this->S[KC_STATE_PX]*this->R[0][2] + this->S[KC_STATE_PZ]*this->R[0][0])*dt;
+    A[KC_STATE_Y][KC_STATE_D1] = (- this->S[KC_STATE_PX]*this->R[1][2] + this->S[KC_STATE_PZ]*this->R[1][0])*dt;
+  }
   A[KC_STATE_Z][KC_STATE_D1] = (- this->S[KC_STATE_PX]*this->R[2][2] + this->S[KC_STATE_PZ]*this->R[2][0])*dt;
 
-  A[KC_STATE_X][KC_STATE_D2] = (this->S[KC_STATE_PX]*this->R[0][1] - this->S[KC_STATE_PY]*this->R[0][0])*dt;
-  A[KC_STATE_Y][KC_STATE_D2] = (this->S[KC_STATE_PX]*this->R[1][1] - this->S[KC_STATE_PY]*this->R[1][0])*dt;
+  if (!skipHorizontalAccPrediction) {
+    A[KC_STATE_X][KC_STATE_D2] = (this->S[KC_STATE_PX]*this->R[0][1] - this->S[KC_STATE_PY]*this->R[0][0])*dt;
+    A[KC_STATE_Y][KC_STATE_D2] = (this->S[KC_STATE_PX]*this->R[1][1] - this->S[KC_STATE_PY]*this->R[1][0])*dt;
+  }
   A[KC_STATE_Z][KC_STATE_D2] = (this->S[KC_STATE_PX]*this->R[2][1] - this->S[KC_STATE_PY]*this->R[2][0])*dt;
 
   // body-frame velocity from body-frame velocity
-  A[KC_STATE_PX][KC_STATE_PX] = 1; //drag negligible
-  A[KC_STATE_PY][KC_STATE_PX] =-gyro->z*dt;
+  if (!skipHorizontalAccPrediction) {
+    A[KC_STATE_PX][KC_STATE_PX] = 1; //drag negligible
+    A[KC_STATE_PY][KC_STATE_PX] =-gyro->z*dt;
+  }
   A[KC_STATE_PZ][KC_STATE_PX] = gyro->y*dt;
 
-  A[KC_STATE_PX][KC_STATE_PY] = gyro->z*dt;
-  A[KC_STATE_PY][KC_STATE_PY] = 1; //drag negligible
+  if (!skipHorizontalAccPrediction) {
+    A[KC_STATE_PX][KC_STATE_PY] = gyro->z*dt;
+    A[KC_STATE_PY][KC_STATE_PY] = 1; //drag negligible
+  }
   A[KC_STATE_PZ][KC_STATE_PY] =-gyro->x*dt;
 
-  A[KC_STATE_PX][KC_STATE_PZ] =-gyro->y*dt;
-  A[KC_STATE_PY][KC_STATE_PZ] = gyro->x*dt;
+  if (!skipHorizontalAccPrediction) {
+    A[KC_STATE_PX][KC_STATE_PZ] =-gyro->y*dt;
+    A[KC_STATE_PY][KC_STATE_PZ] = gyro->x*dt;
+  }
   A[KC_STATE_PZ][KC_STATE_PZ] = 1; //drag negligible
 
   // body-frame velocity from attitude error
-  A[KC_STATE_PX][KC_STATE_D0] =  0;
-  A[KC_STATE_PY][KC_STATE_D0] = -GRAVITY_MAGNITUDE*this->R[2][2]*dt;
+  if (!skipHorizontalAccPrediction) {
+    A[KC_STATE_PX][KC_STATE_D0] =  0;
+    A[KC_STATE_PY][KC_STATE_D0] = -GRAVITY_MAGNITUDE*this->R[2][2]*dt;
+  }
   A[KC_STATE_PZ][KC_STATE_D0] =  GRAVITY_MAGNITUDE*this->R[2][1]*dt;
 
-  A[KC_STATE_PX][KC_STATE_D1] =  GRAVITY_MAGNITUDE*this->R[2][2]*dt;
-  A[KC_STATE_PY][KC_STATE_D1] =  0;
+  if (!skipHorizontalAccPrediction) {
+    A[KC_STATE_PX][KC_STATE_D1] =  GRAVITY_MAGNITUDE*this->R[2][2]*dt;
+    A[KC_STATE_PY][KC_STATE_D1] =  0;
+  }
   A[KC_STATE_PZ][KC_STATE_D1] = -GRAVITY_MAGNITUDE*this->R[2][0]*dt;
 
-  A[KC_STATE_PX][KC_STATE_D2] = -GRAVITY_MAGNITUDE*this->R[2][1]*dt;
-  A[KC_STATE_PY][KC_STATE_D2] =  GRAVITY_MAGNITUDE*this->R[2][0]*dt;
+  if (!skipHorizontalAccPrediction) {
+    A[KC_STATE_PX][KC_STATE_D2] = -GRAVITY_MAGNITUDE*this->R[2][1]*dt;
+    A[KC_STATE_PY][KC_STATE_D2] =  GRAVITY_MAGNITUDE*this->R[2][0]*dt;
+  }
   A[KC_STATE_PZ][KC_STATE_D2] =  0;
 
   // attitude error from attitude error
@@ -456,52 +477,99 @@ static void predictDt(kalmanCoreData_t* this, const kalmanCoreParams_t *params, 
   float tmpSPX, tmpSPY, tmpSPZ;
   float zacc;
 
-  if (quadIsFlying) // only acceleration in z direction
-  {
-    // Use accelerometer and not commanded thrust, as this has proper physical units
-    zacc = acc->z;
+  const float previousX = this->S[KC_STATE_X];
+  const float previousY = this->S[KC_STATE_Y];
+  const float previousPX = this->S[KC_STATE_PX];
+  const float previousPY = this->S[KC_STATE_PY];
 
-    // position updates in the body frame (will be rotated to inertial frame)
-    dx = this->S[KC_STATE_PX] * dt;
-    dy = this->S[KC_STATE_PY] * dt;
-    dz = this->S[KC_STATE_PZ] * dt + zacc * dt2 / 2.0f; // thrust can only be produced in the body's Z direction
+  if (params->lighthousePositionOnly) {
+    if (quadIsFlying) // only acceleration in z direction
+    {
+      // Use accelerometer and not commanded thrust, as this has proper physical units
+      zacc = acc->z;
 
-    // position update
-    this->S[KC_STATE_X] += this->R[0][0] * dx + this->R[0][1] * dy + this->R[0][2] * dz;
-    this->S[KC_STATE_Y] += this->R[1][0] * dx + this->R[1][1] * dy + this->R[1][2] * dz;
-    this->S[KC_STATE_Z] += this->R[2][0] * dx + this->R[2][1] * dy + this->R[2][2] * dz - GRAVITY_MAGNITUDE * dt2 / 2.0f;
+      dz = this->S[KC_STATE_PZ] * dt + zacc * dt2 / 2.0f; // thrust can only be produced in the body's Z direction
 
-    // keep previous time step's state for the update
-    tmpSPX = this->S[KC_STATE_PX];
-    tmpSPY = this->S[KC_STATE_PY];
-    tmpSPZ = this->S[KC_STATE_PZ];
+      // position update
+      this->S[KC_STATE_Z] += this->R[2][2] * dz - GRAVITY_MAGNITUDE * dt2 / 2.0f;
 
-    // body-velocity update: accelerometers - gyros cross velocity - gravity in body frame
-    this->S[KC_STATE_PX] += dt * (gyro->z * tmpSPY - gyro->y * tmpSPZ - GRAVITY_MAGNITUDE * this->R[2][0]);
-    this->S[KC_STATE_PY] += dt * (-gyro->z * tmpSPX + gyro->x * tmpSPZ - GRAVITY_MAGNITUDE * this->R[2][1]);
-    this->S[KC_STATE_PZ] += dt * (zacc + gyro->y * tmpSPX - gyro->x * tmpSPY - GRAVITY_MAGNITUDE * this->R[2][2]);
-  }
-  else // Acceleration can be in any direction, as measured by the accelerometer. This occurs, eg. in freefall or while being carried.
-  {
-    // position updates in the body frame (will be rotated to inertial frame)
-    dx = this->S[KC_STATE_PX] * dt + acc->x * dt2 / 2.0f;
-    dy = this->S[KC_STATE_PY] * dt + acc->y * dt2 / 2.0f;
-    dz = this->S[KC_STATE_PZ] * dt + acc->z * dt2 / 2.0f; // thrust can only be produced in the body's Z direction
+      // keep previous time step's state for the update
+      tmpSPX = this->S[KC_STATE_PX];
+      tmpSPY = this->S[KC_STATE_PY];
+      tmpSPZ = this->S[KC_STATE_PZ];
 
-    // position update
-    this->S[KC_STATE_X] += this->R[0][0] * dx + this->R[0][1] * dy + this->R[0][2] * dz;
-    this->S[KC_STATE_Y] += this->R[1][0] * dx + this->R[1][1] * dy + this->R[1][2] * dz;
-    this->S[KC_STATE_Z] += this->R[2][0] * dx + this->R[2][1] * dy + this->R[2][2] * dz - GRAVITY_MAGNITUDE * dt2 / 2.0f;
+      // body-velocity update: accelerometers - gyros cross velocity - gravity in body frame
+      this->S[KC_STATE_PZ] += dt * (zacc + gyro->y * tmpSPX - gyro->x * tmpSPY - GRAVITY_MAGNITUDE * this->R[2][2]);
+    }
+    else // Acceleration can be in any direction, as measured by the accelerometer. This occurs, eg. in freefall or while being carried.
+    {
+      dz = this->S[KC_STATE_PZ] * dt + acc->z * dt2 / 2.0f; // thrust can only be produced in the body's Z direction
 
-    // keep previous time step's state for the update
-    tmpSPX = this->S[KC_STATE_PX];
-    tmpSPY = this->S[KC_STATE_PY];
-    tmpSPZ = this->S[KC_STATE_PZ];
+      // position update
+      this->S[KC_STATE_Z] += this->R[2][2] * dz - GRAVITY_MAGNITUDE * dt2 / 2.0f;
 
-    // body-velocity update: accelerometers - gyros cross velocity - gravity in body frame
-    this->S[KC_STATE_PX] += dt * (acc->x + gyro->z * tmpSPY - gyro->y * tmpSPZ - GRAVITY_MAGNITUDE * this->R[2][0]);
-    this->S[KC_STATE_PY] += dt * (acc->y - gyro->z * tmpSPX + gyro->x * tmpSPZ - GRAVITY_MAGNITUDE * this->R[2][1]);
-    this->S[KC_STATE_PZ] += dt * (acc->z + gyro->y * tmpSPX - gyro->x * tmpSPY - GRAVITY_MAGNITUDE * this->R[2][2]);
+      // keep previous time step's state for the update
+      tmpSPX = this->S[KC_STATE_PX];
+      tmpSPY = this->S[KC_STATE_PY];
+      tmpSPZ = this->S[KC_STATE_PZ];
+
+      // body-velocity update: accelerometers - gyros cross velocity - gravity in body frame
+      this->S[KC_STATE_PZ] += dt * (acc->z + gyro->y * tmpSPX - gyro->x * tmpSPY - GRAVITY_MAGNITUDE * this->R[2][2]);
+    }
+
+    // Keep the horizontal state aligned with Lighthouse updates only
+    this->S[KC_STATE_X] = previousX;
+    this->S[KC_STATE_Y] = previousY;
+    this->S[KC_STATE_PX] = previousPX;
+    this->S[KC_STATE_PY] = previousPY;
+  } else {
+    if (quadIsFlying) // only acceleration in z direction
+    {
+      // Use accelerometer and not commanded thrust, as this has proper physical units
+      zacc = acc->z;
+
+      // position updates in the body frame (will be rotated to inertial frame)
+      dx = this->S[KC_STATE_PX] * dt;
+      dy = this->S[KC_STATE_PY] * dt;
+      dz = this->S[KC_STATE_PZ] * dt + zacc * dt2 / 2.0f; // thrust can only be produced in the body's Z direction
+
+      // position update
+      this->S[KC_STATE_X] += this->R[0][0] * dx + this->R[0][1] * dy + this->R[0][2] * dz;
+      this->S[KC_STATE_Y] += this->R[1][0] * dx + this->R[1][1] * dy + this->R[1][2] * dz;
+      this->S[KC_STATE_Z] += this->R[2][0] * dx + this->R[2][1] * dy + this->R[2][2] * dz - GRAVITY_MAGNITUDE * dt2 / 2.0f;
+
+      // keep previous time step's state for the update
+      tmpSPX = this->S[KC_STATE_PX];
+      tmpSPY = this->S[KC_STATE_PY];
+      tmpSPZ = this->S[KC_STATE_PZ];
+
+      // body-velocity update: accelerometers - gyros cross velocity - gravity in body frame
+      this->S[KC_STATE_PX] += dt * (gyro->z * tmpSPY - gyro->y * tmpSPZ - GRAVITY_MAGNITUDE * this->R[2][0]);
+      this->S[KC_STATE_PY] += dt * (-gyro->z * tmpSPX + gyro->x * tmpSPZ - GRAVITY_MAGNITUDE * this->R[2][1]);
+      this->S[KC_STATE_PZ] += dt * (zacc + gyro->y * tmpSPX - gyro->x * tmpSPY - GRAVITY_MAGNITUDE * this->R[2][2]);
+    }
+    else // Acceleration can be in any direction, as measured by the accelerometer. This occurs, eg. in freefall or while being carried.
+    {
+      // position updates in the body frame (will be rotated to inertial frame)
+      dx = this->S[KC_STATE_PX] * dt + acc->x * dt2 / 2.0f;
+      dy = this->S[KC_STATE_PY] * dt + acc->y * dt2 / 2.0f;
+      dz = this->S[KC_STATE_PZ] * dt + acc->z * dt2 / 2.0f; // thrust can only be produced in the body's Z direction
+
+      // position update
+      this->S[KC_STATE_X] += this->R[0][0] * dx + this->R[0][1] * dy + this->R[0][2] * dz;
+      this->S[KC_STATE_Y] += this->R[1][0] * dx + this->R[1][1] * dy + this->R[1][2] * dz;
+      this->S[KC_STATE_Z] += this->R[2][0] * dx + this->R[2][1] * dy + this->R[2][2] * dz - GRAVITY_MAGNITUDE * dt2 / 2.0f;
+
+      // keep previous time step's state for the update
+      tmpSPX = this->S[KC_STATE_PX];
+      tmpSPY = this->S[KC_STATE_PY];
+      tmpSPZ = this->S[KC_STATE_PZ];
+
+      // body-velocity update: accelerometers - gyros cross velocity - gravity in body frame
+      this->S[KC_STATE_PX] += dt * (acc->x + gyro->z * tmpSPY - gyro->y * tmpSPZ - GRAVITY_MAGNITUDE * this->R[2][0]);
+      this->S[KC_STATE_PY] += dt * (acc->y - gyro->z * tmpSPX + gyro->x * tmpSPZ - GRAVITY_MAGNITUDE * this->R[2][1]);
+      this->S[KC_STATE_PZ] += dt * (acc->z + gyro->y * tmpSPX - gyro->x * tmpSPY - GRAVITY_MAGNITUDE * this->R[2][2]);
+    }
   }
 
   // attitude update (rotate by gyroscope), we do this in quaternions

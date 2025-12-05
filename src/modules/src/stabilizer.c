@@ -90,6 +90,7 @@ static setpoint_t tempSetpoint;
 
 static StateEstimatorType estimatorType;
 static ControllerType controllerType;
+static uint8_t lhCtrlFrameParam = 0;
 static bool useLighthouseFrameForControl = false;
 
 static STATS_CNT_RATE_DEFINE(stabilizerRate, 500);
@@ -340,6 +341,7 @@ static void stabilizerTask(void* param)
 
       stateEstimator(&state, stabilizerStep);
 
+      useLighthouseFrameForControl = lhCtrlFrameParam != 0;
       const bool useLhFrame = useLighthouseFrameForControl && kalmanLhRelativeModeIsEnabled();
 
       state_t controlState = state;
@@ -422,7 +424,7 @@ PARAM_GROUP_START(stabilizer)
 /**
  * @brief When 1, controller consumes Lighthouse rig-frame position instead of world estimate
  */
-  PARAM_ADD_CORE(PARAM_UINT8, lhCtrlFrame, &useLighthouseFrameForControl)
+  PARAM_ADD_CORE(PARAM_UINT8, lhCtrlFrame, &lhCtrlFrameParam)
 
 PARAM_GROUP_STOP(stabilizer)
 
